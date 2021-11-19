@@ -1,152 +1,170 @@
 package main
 
 import (
-	"fmt"
+	"log"
+	"net/http"
 	"os"
-	"time"
+	"strconv"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/gin-gonic/gin"
+	_ "github.com/go-sql-driver/mysql" //直接的な記述が無いが、インポートしたいものに対しては"_"を頭につける決まり
 	"github.com/jinzhu/gorm"
 	"github.com/joho/godotenv"
 )
 
-func main() {
-	loadEnv()
-	// db接続
-	db, err := sqlConnect()
+// Tweetモデル宣言
+// モデルはDBのテーブル構造をGOの構造体で表したもの
+type Tweet struct {
+	gorm.Model
+	Content string `form:"content" binding:"required"`
+}
+
+func gormConnect() *gorm.DB {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
+	DBMS := os.Getenv("mytweet_DBMS")
+	USER := os.Getenv("mytweet_USER")
+	PASS := os.Getenv("mytweet_PASS")
+	DBNAME := os.Getenv("mytweet_DBNAME")
+	CONNECT := USER + ":" + PASS + "@/" + DBNAME + "?parseTime=true"
+	db, err := gorm.Open(DBMS, CONNECT)
 	if err != nil {
 		panic(err.Error())
 	}
+	return db
+}
+
+// DBの初期化
+func dbInit() {
+	db := gormConnect()
+
+	// コネクション解放
 	defer db.Close()
-
-	// 関数呼び出し
-	addUserData(db, "Vaundy")
-	// delete(db, 3)
-	// findLike(db, "SaucyDog")
-	// update(db, 4, "TOCCHI")
-
-	// データベースからデータ取得
-	result := []*Users{}
-	error := db.Find(&result).Error
-
-	if error != nil {
-		fmt.Println(error)
-	}
-
-	result = []*Users{}
-	db.Find(&result)
-	for _, user := range result {
-		fmt.Println(user)
-	}
-
+	db.AutoMigrate(&Tweet{}) //構造体に基づいてテーブルを作成
 }
 
-//.envを呼び出します。
-func loadEnv() {
+// データインサート処理
+func dbInsert(content string) {
+	db := gormConnect()
 
-	err := godotenv.Load(".env")
-
-	if err != nil {
-		fmt.Printf("読み込み出来ませんでした: %v", err)
-	}
-
+	defer db.Close()
+	// Insert処理
+	db.Create(&Tweet{Content: content})
 }
 
-// データ追加関数
-func addUserData(db *gorm.DB, name string) {
-	error := db.Create(&Users{
-		Name:     name,
-		Age:      18,
-		Address:  "東京都千代田区",
-		UpdateAt: getDate(),
-	}).Error
-	if error != nil {
-		fmt.Println(error)
-	} else {
-		fmt.Println("データ追加したよ！")
-	}
+//DB更新
+func dbUpdate(id int, tweetText string) {
+	db := gormConnect()
+	var tweet Tweet
+	db.First(&tweet, id)
+	tweet.Content = tweetText
+	db.Save(&tweet)
+	db.Close()
 }
 
-// データ削除関数
-func delete(db *gorm.DB, id int) {
-	error := db.Where("id = ?", id).Delete(Users{}).Error
-	if error != nil {
-		fmt.Println(error)
-	} else {
-		fmt.Println("deleteしたよ")
-	}
+// 全件取得
+func dbGetAll() []Tweet {
+	db := gormConnect()
+
+	defer db.Close()
+	var tweets []Tweet
+	// FindでDB名を指定して取得した後、orderで登録順に並び替え
+	db.Order("created_at desc").Find(&tweets)
+	return tweets
 }
 
-func findLike(db *gorm.DB, keyword string) {
-	result := []*Users{}
-	error := db.Where("name LIKE ?", "%"+keyword+"%").Find(&result).Error
-	if error != nil || len(result) == 0 {
-		return
-	}
-	for _, user := range result {
-		fmt.Println(user.Name)
-		// fmt.Println("探しているデータが見つかったよ！")
-	}
+//DB一つ取得
+func dbGetOne(id int) Tweet {
+	db := gormConnect()
+	var tweet Tweet
+	db.First(&tweet, id)
+	db.Close()
+	return tweet
 }
 
-// アップデート関数
-func update(db *gorm.DB, id int, name string) {
-	result := []*Users{}
-	db.Find(&result)
-	for _, user := range result {
-		fmt.Println(string(user.ID) + "_" + user.Name)
-	}
-	fmt.Println("update")
-	// Modelに構造体の配列をいれる
-	error := db.Model(Users{}).Where("id = ?", id).Update(&Users{
-		Name:     name,
-		UpdateAt: getDate(),
-	}).Error
-	//// UPDATE users SET name='ゴン太', update_at={現在日時};
-
-	if error != nil {
-		fmt.Println(error)
-	}
-
-	result = []*Users{}
-	db.Find(&result)
-	for _, user := range result {
-		fmt.Println(string(user.ID) + "_" + user.Name)
-		fmt.Println("アップデート完了！")
-	}
+//DB削除
+func dbDelete(id int) {
+	db := gormConnect()
+	var tweet Tweet
+	db.First(&tweet, id)
+	db.Delete(&tweet)
+	db.Close()
 }
 
-// 日付取得関数
-func getDate() string {
-	const layout = "2006-01-02 15:04:05"
-	now := time.Now()
-	return now.Format(layout)
-}
+func main() {
+	router := gin.Default()
+	router.LoadHTMLGlob("views/*.html")
 
-// SQLConnect DB接続
-func sqlConnect() (database *gorm.DB, err error) {
+	dbInit()
 
-	dbms := os.Getenv("DBMS")
-	user := os.Getenv("USER")
-	password := os.Getenv("PASSWORD")
-	protocol := os.Getenv("PROTOCOL")
-	dbname := os.Getenv("DBNAME")
+	//一覧
+	router.GET("/", func(c *gin.Context) {
+		tweets := dbGetAll()
+		c.HTML(200, "index.html", gin.H{"tweets": tweets})
+	})
 
-	DBMS := dbms
-	USER := user
-	PASS := password
-	PROTOCOL := protocol
-	DBNAME := dbname
+	//登録
+	router.POST("/new", func(c *gin.Context) {
+		var form Tweet
+		// ここがバリデーション部分
+		if err := c.Bind(&form); err != nil {
+			tweets := dbGetAll()
+			c.HTML(http.StatusBadRequest, "index.html", gin.H{"tweets": tweets, "err": err})
+			c.Abort()
+		} else {
+			content := c.PostForm("content")
+			dbInsert(content)
+			c.Redirect(302, "/")
+		}
+	})
 
-	CONNECT := USER + ":" + PASS + "@" + PROTOCOL + "/" + DBNAME + "?charset=utf8&parseTime=true&loc=Asia%2FTokyo"
-	return gorm.Open(DBMS, CONNECT)
-}
+	//投稿詳細
+	router.GET("/detail/:id", func(c *gin.Context) {
+		n := c.Param("id")
+		id, err := strconv.Atoi(n)
+		if err != nil {
+			panic(err)
+		}
+		tweet := dbGetOne(id)
+		c.HTML(200, "detail.html", gin.H{"tweet": tweet})
+	})
 
-// 構造体の定義
-type Users struct {
-	ID       int
-	Name     string `json:"name"`
-	Age      int    `json:"age"`
-	Address  string `json:"address"`
-	UpdateAt string `json:"updateAt" sql:"not null;type:date"`
+	//更新
+	router.POST("/update/:id", func(c *gin.Context) {
+		n := c.Param("id")
+		id, err := strconv.Atoi(n)
+		if err != nil {
+			panic("ERROR")
+		}
+		tweet := c.PostForm("tweet")
+		dbUpdate(id, tweet)
+		c.Redirect(302, "/")
+	})
+
+	//削除確認
+	router.GET("/delete_check/:id", func(c *gin.Context) {
+		n := c.Param("id")
+		id, err := strconv.Atoi(n)
+		if err != nil {
+			panic("ERROR")
+		}
+		tweet := dbGetOne(id)
+		c.HTML(200, "delete.html", gin.H{"tweet": tweet})
+	})
+
+	//削除
+	router.POST("/delete/:id", func(c *gin.Context) {
+		n := c.Param("id")
+		id, err := strconv.Atoi(n)
+		if err != nil {
+			panic("ERROR")
+		}
+		dbDelete(id)
+		c.Redirect(302, "/")
+
+	})
+
+	router.Run()
 }
